@@ -1,0 +1,20 @@
+[
+  {
+    "address": "0x29E240CFD7946BA20895a7a02eDb25C210f9f324",
+    "vault": "aLINK v1",
+    "apyTooltip": "This vault is no longer active and its strategy is unwinding.",
+    "type": "v1"
+  },
+  {
+    "address": "0xe11ba472F74869176652C35D30dB89854b5ae84D",
+    "apyTooltip": "This vault is no longer active. Please withdraw any funds.",
+    "vault": "HEGIC v2",
+    "type": "v2"
+  },
+  {
+    "address": "0xE0db48B4F71752C4bEf16De1DBD042B82976b8C7",
+    "vault": "mUSD",
+    "apyTooltip": "This vault is no longer active and its strategy is unwinding.",
+    "type": "v1"
+  }
+]

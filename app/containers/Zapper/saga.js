@@ -1,12 +1,28 @@
-import { takeLatest, select, put, call } from 'redux-saga/effects';
+import { takeLatest, take, select, put, call } from 'redux-saga/effects';
+import { channel } from 'redux-saga';
 import BigNumber from 'bignumber.js';
-import { selectAccount } from 'containers/ConnectionProvider/selectors';
+import { first, get } from 'lodash';
 import request from 'utils/request';
-import { zapperDataLoaded, zapInError } from './actions';
-import { INIT_ZAPPER, ZAP_IN, ETH_ADDRESS } from './constants';
-
+import { selectAccount } from 'containers/ConnectionProvider/selectors';
+import { selectContractData } from 'containers/App/selectors';
+import { MAX_UINT256 } from 'containers/Cover/constants';
+import {
+  YVBOOST_ETH_PJAR,
+  PICKLEJAR_ADDRESS,
+} from 'containers/Vaults/constants';
+import { zapperDataLoaded, zapInError, zapOutError } from './actions';
+import {
+  INIT_ZAPPER,
+  ZAP_IN,
+  ETH_ADDRESS,
+  ZAP_OUT,
+  MIGRATE_PICKLE_GAUGE,
+  DEFAULT_SLIPPAGE,
+} from './constants';
 const ZAPPER_API = 'https://api.zapper.fi/v1';
 const { ZAPPER_APIKEY } = process.env;
+
+const transactionChannel = channel();
 
 const isEth = (address) => address === ETH_ADDRESS;
 
@@ -31,19 +47,101 @@ function* initializeZapper() {
 
   try {
     const tokens = yield call(request, getZapperApi('/prices'));
-    const vaults = yield call(request, getZapperApi('/vault-stats/yearn'));
-    const balances = yield call(
+    const yvaults = yield call(request, getZapperApi('/vault-stats/yearn'));
+    const pickleVaults = yield call(
       request,
-      getZapperApi('/balances/tokens', {
+      getZapperApi('/vault-stats/pickle', {
         addresses: [account],
       }),
     );
+    const vaults = yvaults.concat(pickleVaults);
+    const balancesResponse = yield call(
+      request,
+      getZapperApi('/protocols/tokens/balances', {
+        addresses: [account],
+      }),
+    );
+    const balances = get(
+      first(
+        balancesResponse[account.toLowerCase()].products.filter(
+          ({ label }) => label === 'Tokens',
+        ),
+      ),
+      'assets',
+    );
 
     yield put(
-      zapperDataLoaded({ tokens, vaults, balances: balances[account] }),
+      zapperDataLoaded({
+        tokens,
+        vaults,
+        balances,
+        pickleVaults,
+      }),
     );
   } catch (err) {
     console.log(err);
+  }
+}
+function* migratePickleGauge(action) {
+  const {
+    pickleDepositAmount,
+    zapPickleMigrateContract,
+    tokenContract,
+    allowance,
+  } = action.payload;
+  const account = yield select(selectAccount());
+
+  // https://api.zapper.fi/v1/vault-stats/pickle?api_key=5d1237c2-3840-4733-8e92-c5a58fe81b88
+  let lpyveCRVVaultv2 = {};
+  let lpyveCRVDAO = {};
+  try {
+    // yield call(oldPickleGaugeContract.methods.exit().send, { from: account });
+    if (allowance === 0 || allowance === '0' || !allowance) {
+      yield call(
+        tokenContract.methods.approve(
+          // eslint-disable-next-line no-underscore-dangle
+          zapPickleMigrateContract._address,
+          MAX_UINT256,
+        ).send,
+        { from: account },
+      );
+    }
+    const picklePrices = yield call(
+      request,
+      getZapperApi('/vault-stats/pickle', {}),
+    );
+    //    incomingLP={quantity of pSUSHI ETH / yveCRV-DAO tokens sent by user}
+    // minPTokens={(quantity of pSUSHI ETH / yveCRV-DAO tokens sent by user * pSUSHI ETH / yveCRV-DAO pricePerToken) /
+    //  pSUSHI yveCRV Vault (v2) / ETH pricePerToken}
+    picklePrices.map((pp) => {
+      // PICKLEJAR_ADDRESS
+      if (pp.address.toLowerCase() === YVBOOST_ETH_PJAR.toLocaleLowerCase()) {
+        lpyveCRVVaultv2 = pp;
+      } else if (
+        pp.address.toLowerCase() === PICKLEJAR_ADDRESS.toLocaleLowerCase()
+      ) {
+        lpyveCRVDAO = pp;
+      }
+      return pp;
+    });
+    const minPTokens =
+      (new BigNumber(pickleDepositAmount).dividedBy(10 ** 18) *
+        lpyveCRVDAO.pricePerToken) /
+      lpyveCRVVaultv2.pricePerToken;
+    console.log('minPTokens', minPTokens);
+    console.log('minPTokens depositamout', pickleDepositAmount);
+    const minPTokensFinal = new BigNumber(minPTokens)
+      .times(10 ** 18)
+      .dividedBy(10);
+    yield call(
+      zapPickleMigrateContract.methods.Migrate(
+        pickleDepositAmount,
+        minPTokensFinal,
+      ).send,
+      { from: account },
+    );
+  } catch (error) {
+    console.error('failed exit', error);
   }
 }
 
@@ -53,8 +151,10 @@ function* zapIn(action) {
     poolAddress,
     sellTokenAddress,
     sellAmount,
-    slippagePercentage,
+    protocol,
   } = action.payload;
+
+  const zapProtocol = protocol || 'yearn';
 
   const ownerAddress = yield select(selectAccount());
   const isSellTokenEth = isEth(sellTokenAddress);
@@ -72,29 +172,42 @@ function* zapIn(action) {
     if (!isSellTokenEth) {
       const approvalState = yield call(
         request,
-        getZapperApi('/zap-in/yearn/approval-state', {
+        getZapperApi(`/zap-in/${zapProtocol}/approval-state`, {
           sellTokenAddress,
           ownerAddress,
         }),
       );
 
-      if (!approvalState.isApproved) {
+      if (!approvalState.isApproved || approvalState.allowance === '0') {
         const approvalTransaction = yield call(
           request,
-          getZapperApi('/zap-in/yearn/approval-transaction', {
+          getZapperApi(`/zap-in/${zapProtocol}/approval-transaction`, {
             gasPrice,
             sellTokenAddress,
             ownerAddress,
           }),
         );
-        yield call(web3.eth.sendTransaction, approvalTransaction);
+        const broadcastTransaction = (err, transactionHash) => {
+          if (err) {
+            return;
+          }
+          transactionChannel.put({
+            transactionHash,
+            contractAddress: approvalTransaction.to,
+          });
+        };
+        yield call(
+          web3.eth.sendTransaction,
+          approvalTransaction,
+          broadcastTransaction,
+        );
       }
     }
 
     const zapInTransaction = yield call(
       request,
-      getZapperApi('/zap-in/yearn/transaction', {
-        slippagePercentage,
+      getZapperApi(`/zap-in/${zapProtocol}/transaction`, {
+        slippagePercentage: DEFAULT_SLIPPAGE,
         gasPrice,
         poolAddress,
         sellTokenAddress,
@@ -102,16 +215,172 @@ function* zapIn(action) {
         ownerAddress,
       }),
     );
-    yield call(web3.eth.sendTransaction, zapInTransaction);
+
+    const broadcastTransaction = (err, transactionHash) => {
+      if (err) {
+        return;
+      }
+      transactionChannel.put({
+        transactionHash,
+        contractAddress: poolAddress,
+      });
+    };
+
+    yield call(
+      web3.eth.sendTransaction,
+      zapInTransaction,
+      broadcastTransaction,
+    );
+  } catch (error) {
+    let errorMessage = '';
+    if (error && error.message) {
+      errorMessage = error.message;
+    } else {
+      errorMessage =
+        'This means there is not enough liquidity for this token or Zapper may be down. Try with DAI, ETH, USDC or USDT as they offer the more liquidity. ';
+    }
+    yield put(
+      zapInError({ message: `Zap Failed. ${errorMessage}`, poolAddress }),
+    );
+  }
+}
+
+export function* watchForTransactions() {
+  while (true) {
+    const action = yield take(transactionChannel);
+    const { transactionHash, contractAddress } = action;
+    yield put({
+      type: 'TX_BROADCASTED',
+      txHash: transactionHash,
+      contractAddress,
+    });
+  }
+}
+
+function* zapOut(action) {
+  const {
+    web3,
+    vaultContract,
+    withdrawalAmount,
+    decimals,
+    selectedWithdrawToken,
+    protocol,
+  } = action.payload;
+
+  const zapProtocol = protocol || 'yearn';
+
+  const ownerAddress = yield select(selectAccount());
+  const vaultContractData = yield select(
+    selectContractData(vaultContract.address),
+  );
+
+  const poolAddress = vaultContract.address.toLowerCase();
+
+  const v2Vault = _.get(vaultContractData, 'pricePerShare');
+  let sharesForWithdrawal;
+  if (v2Vault) {
+    const sharePrice = _.get(vaultContractData, 'pricePerShare');
+    sharesForWithdrawal = new BigNumber(withdrawalAmount)
+      .dividedBy(sharePrice / 10 ** decimals)
+      .decimalPlaces(0)
+      .toFixed(0);
+  } else {
+    const sharePrice = _.get(vaultContractData, 'getPricePerFullShare');
+    sharesForWithdrawal = new BigNumber(withdrawalAmount)
+      .dividedBy(sharePrice / 10 ** 18)
+      .decimalPlaces(0)
+      .toFixed(0);
+  }
+
+  try {
+    const gasPrices = yield call(
+      request,
+      getZapperApi('/gas-price', {
+        sellTokenAddress: vaultContract.address.toLowerCase(),
+        ownerAddress,
+      }),
+    );
+    const gasPrice = new BigNumber(gasPrices.fast).times(10 ** 9);
+
+    const approvalState = yield call(
+      request,
+      getZapperApi(`/zap-out/${zapProtocol}/approval-state`, {
+        sellTokenAddress: vaultContract.address.toLowerCase(),
+        ownerAddress,
+      }),
+    );
+
+    if (!approvalState.isApproved || approvalState.allowance === '0') {
+      const approvalTransaction = yield call(
+        request,
+        getZapperApi(`/zap-out/${zapProtocol}/approval-transaction`, {
+          gasPrice,
+          sellTokenAddress: vaultContract.address.toLowerCase(),
+          ownerAddress,
+        }),
+      );
+
+      const broadcastTransaction = (err, transactionHash) => {
+        if (err) {
+          return;
+        }
+        transactionChannel.put({
+          transactionHash,
+          contractAddress: poolAddress,
+        });
+      };
+      yield call(
+        web3.eth.sendTransaction,
+        approvalTransaction,
+        broadcastTransaction,
+      );
+    }
+
+    const zapOutTransaction = yield call(
+      request,
+      getZapperApi(`/zap-out/${zapProtocol}/transaction`, {
+        slippagePercentage: DEFAULT_SLIPPAGE,
+        gasPrice,
+        poolAddress,
+        toTokenAddress: selectedWithdrawToken.address.toLowerCase(),
+        sellAmount: sharesForWithdrawal,
+        ownerAddress,
+      }),
+    );
+
+    const broadcastTransaction = (err, transactionHash) => {
+      if (err) {
+        return;
+      }
+      transactionChannel.put({
+        transactionHash,
+        contractAddress: poolAddress,
+      });
+    };
+    yield call(
+      web3.eth.sendTransaction,
+      zapOutTransaction,
+      broadcastTransaction,
+    );
   } catch (error) {
     console.log('Zap Failed', error);
+    let errorMessage = '';
+    if (error && error.message) {
+      errorMessage = error.message;
+    } else {
+      errorMessage =
+        'This means there is not enough liquidity for this token or Zapper may be down. Try with DAI, ETH, USDC or USDT as they offer the more liquidity. ';
+    }
     yield put(
-      zapInError({ message: `Zap Failed. ${error.message}`, poolAddress }),
+      zapOutError({ message: `Zap Failed. ${errorMessage}`, vaultContract }),
     );
   }
 }
 
 export default function* rootSaga() {
   yield takeLatest(INIT_ZAPPER, initializeZapper);
+  yield takeLatest(INIT_ZAPPER, watchForTransactions);
   yield takeLatest(ZAP_IN, zapIn);
+  yield takeLatest(ZAP_OUT, zapOut);
+  yield takeLatest(MIGRATE_PICKLE_GAUGE, migratePickleGauge);
 }
