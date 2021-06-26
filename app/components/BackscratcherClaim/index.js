@@ -34,17 +34,19 @@ const BackscratcherClaim = ({ vaultAddress, isScreenMd }) => {
   const threeCrvContract = useContract(THREECRV_ADDRESS);
   const vaultContractData = useSelector(selectContractData(vaultAddress));
   if (!vaultContract) {
-    return null;
+    // return null;
   }
   const index = get(vaultContractData, 'index');
   const supplyIndex = get(vaultContractData, 'supplyIndex');
   const balance = get(vaultContractData, 'balanceOf');
+  const cached = get(vaultContractData, 'claimable');
   const claimable = formatAmount(
     weiToUnits(
       new BigNumber(index)
         .minus(supplyIndex)
         .times(balance)
-        .div(10 ** 18),
+        .div(10 ** 18)
+        .plus(cached),
       18,
     ),
     2,
@@ -84,10 +86,10 @@ const BackscratcherClaim = ({ vaultAddress, isScreenMd }) => {
                 }
                 color="primary"
                 disabled={!claimable}
-                showTooltip={!claimable}
-                tooltipText="You don’t have any claimable rewards"
+                showTooltipWhenDisabled
+                disabledTooltipText="You don’t have any claimable rewards"
               >
-                Stake
+                Restake
               </ButtonFilled>
             </Box>
             <Box ml={5} width={isScreenMd ? '30%' : 1}>
@@ -102,8 +104,8 @@ const BackscratcherClaim = ({ vaultAddress, isScreenMd }) => {
                 }
                 color="primary"
                 disabled={!claimable}
-                showTooltip={!claimable}
-                tooltipText="You don’t have any claimable rewards"
+                showTooltipWhenDisabled
+                disabledTooltipText="You don’t have any claimable rewards"
               >
                 Claim
               </ButtonFilled>

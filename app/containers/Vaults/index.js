@@ -1,4 +1,9 @@
 import React, { useContext, useEffect, useState } from 'react';
+import {
+  useWeb3,
+  useWallet,
+  useAccount,
+} from 'containers/ConnectionProvider/hooks';
 import styled from 'styled-components';
 import { keyBy, get } from 'lodash';
 import Hidden from '@material-ui/core/Hidden';
@@ -14,19 +19,22 @@ import {
   selectOrderedVaults,
   selectAmplifyVaults,
 } from 'containers/App/selectors';
+import PickleJarAbi2 from 'abi/pickleJar2.json';
 import { useSelector } from 'react-redux';
 import Vault from 'components/Vault';
 import { useShowDevVaults } from 'containers/Vaults/hooks';
 // import VaultsNavLinks from 'components/VaultsNavLinks';
 // import AddVault from 'components/AddVault';
 import AccordionContext from 'react-bootstrap/AccordionContext';
-import { useWallet, useAccount } from 'containers/ConnectionProvider/hooks';
 import LinearProgress from '@material-ui/core/LinearProgress';
 import useMediaQuery from '@material-ui/core/useMediaQuery';
 import BigNumber from 'bignumber.js';
 import Box from 'components/Box';
 import request from 'utils/request';
-import { ALIASES_API } from 'containers/Vaults/constants';
+import { ALIASES_API, YVBOOST_ETH_PJAR } from 'containers/Vaults/constants';
+import setDecimals from 'utils/setDecimals';
+import migrationWhitelist from 'containers/Vaults/migrationWhitelist.json';
+import MigrationBannerSvg from './MigrationBannerSvg';
 
 const Wrapper = styled(Box)`
   margin-top: 20px;
@@ -118,6 +126,23 @@ const Vaults = (props) => {
 
   let vaultItems = showDevVaults ? localContracts : orderedVaults;
 
+  function extractMigratedVaults(vaults) {
+    const extractedVaults = [];
+    const nonMigratedVaults = [];
+    vaults.forEach((vault) => {
+      let found = false;
+      migrationWhitelist.forEach((migratedVault) => {
+        if (migratedVault.vaultFrom === vault.address) {
+          extractedVaults.push(vault);
+          found = true;
+        }
+      });
+      if (!found) {
+        nonMigratedVaults.push(vault);
+      }
+    });
+    return { extractedVaults, nonMigratedVaults };
+  }
   function parseVaults(vaults) {
     return _.map(vaults, (vault) => {
       const vaultContractData = allContracts[vault.address] || {};
@@ -210,15 +235,18 @@ const Vaults = (props) => {
       newVault.alias = get(aliasByVault[vault.address], 'name') || vault.name;
       newVault.tokenAlias =
         get(aliasByVault[vault.address], 'symbol') || vault.displayName;
-
-      return newVault;
+      return Object(newVault);
     });
   }
 
   vaultItems = parseVaults(vaultItems);
   const amplifyVaultItems = parseVaults(amplifyVaults);
-
+  const migratedVaultsResults = extractMigratedVaults(vaultItems);
+  vaultItems = migratedVaultsResults.nonMigratedVaults;
+  const migratedVaultItems = migratedVaultsResults.extractedVaults;
   const { items, requestSort, sortConfig } = useSortableData(vaultItems);
+  const migratedSortedData = useSortableData(migratedVaultItems);
+  const migratedItems = migratedSortedData.items;
 
   useEffect(() => {
     requestSort('valueDeposited');
@@ -241,11 +269,11 @@ const Vaults = (props) => {
 
   useEffect(() => {
     // Scroll to the vault
-    if (showAccordionKey && orderedVaults) {
-      const anchor = `vault-${showAccordionKey}`;
-      const el = document.getElementById(anchor);
-      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
+    // if (showAccordionKey && orderedVaults) {
+    //   const anchor = `vault-${showAccordionKey}`;
+    //   const el = document.getElementById(anchor);
+    //   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // }
   }, [orderedVaults]);
 
   let columnHeader;
@@ -257,7 +285,46 @@ const Vaults = (props) => {
       <VaultsHeader requestSort={requestSort} sortConfig={sortConfig} />
     );
   }
+  const [yvBOOSTBalance, setYvBOOSTBalance] = useState(0);
+  const web3 = useWeb3();
 
+  useEffect(() => {
+    const getBalance = async () => {
+      try {
+        const yvBoostETHContract = new web3.eth.Contract(
+          PickleJarAbi2,
+          YVBOOST_ETH_PJAR,
+        );
+        const r = await yvBoostETHContract.methods.balanceOf(account).call();
+        setYvBOOSTBalance(r);
+      } catch (error) {
+        console.log(error);
+      }
+    };
+    getBalance();
+  }, []);
+  let yboostLPVault = {};
+  amplifyVaultItems.map((v) => {
+    if (v.symbol === 'yvBOOST') {
+      yboostLPVault = v;
+      yboostLPVault = {
+        ...yboostLPVault,
+        ...{
+          type: 'v2',
+          displayName: 'yvBOOST - ETH',
+          isYVBoost: true,
+          symbol: 'yvBOOST-ETH',
+          address: '0xc695f73c1862e050059367B2E64489E66c525983',
+        },
+      };
+    }
+    return v;
+  });
+  const tmpVault = amplifyVaultItems[1];
+  // eslint-disable-next-line prefer-destructuring
+  amplifyVaultItems[1] = amplifyVaultItems[2];
+  amplifyVaultItems[2] = tmpVault;
+  amplifyVaultItems.push(yboostLPVault);
   let warning;
   if (showDevVaults) {
     warning = <Warning>Experimental vaults. Use at your own risk.</Warning>;
@@ -269,9 +336,11 @@ const Vaults = (props) => {
           <AmplifyWrapper
             showDevVaults={showDevVaults}
             walletConnected={walletConnected}
+            account={account}
             vaultItems={amplifyVaultItems}
             backscratcherAlias={backscratcherAlias}
             pickleVaultAlias={pickleVaultAlias}
+            yvBOOSTBalance={yvBOOSTBalance}
           />
         </StyledAccordion>
       </WrapTable>
@@ -304,6 +373,19 @@ const Vaults = (props) => {
         {warning}
         {amplifyVaultsWrapper}
         <WrapTable center width={1}>
+          <StyledAccordion
+            onSelect={linkToVault}
+            defaultActiveKey={showAccordionKey}
+          >
+            <VaultsWrapper
+              vaultItems={migratedItems}
+              showDevVaults={showDevVaults}
+              walletConnected={walletConnected}
+              isMigrated
+            />
+          </StyledAccordion>
+        </WrapTable>
+        <WrapTable center width={1}>
           <Hidden smDown>{columnHeader}</Hidden>
           <StyledAccordion
             onSelect={linkToVault}
@@ -328,21 +410,28 @@ const AmplifyWrapper = (props) => {
     vaultItems,
     backscratcherAlias,
     pickleVaultAlias,
+    account,
+    yvBOOSTBalance,
   } = props;
   const backscratcherVault = useSelector(selectBackscratcherVault());
   const pickleVault = useSelector(selectPickleVault());
+  const web3 = useWeb3();
 
   const currentEventKey = useContext(AccordionContext);
   const multiplier = _.get(backscratcherVault, 'apy.data.currentBoost', 0);
   const multiplierText = `${multiplier.toFixed(2)}x`;
   // TODO Check to remove this
   backscratcherVault.multiplier = multiplierText;
-  backscratcherVault.apy.recommended = backscratcherVault.apy.data.totalApy;
+  backscratcherVault.apy.recommended = backscratcherVault.apy.data.boostedApr;
   backscratcherVault.alias = backscratcherAlias;
 
   pickleVault.alias = pickleVaultAlias;
 
   const renderVault = (vault) => {
+    if (vault.displayName === 'SLP') {
+      // eslint-disable-next-line no-param-reassign
+      vault.displayName = 'yveCRV - ETH';
+    }
     const vaultKey = vault.address;
     return (
       <Vault
@@ -352,6 +441,10 @@ const AmplifyWrapper = (props) => {
         active={currentEventKey === vaultKey}
         showDevVaults={showDevVaults}
         amplifyVault
+        walletConnected={walletConnected}
+        account={account}
+        web3={web3}
+        yvBOOSTBalance={yvBOOSTBalance}
       />
     );
   };
@@ -369,9 +462,26 @@ const AmplifyWrapper = (props) => {
 };
 
 const VaultsWrapper = (props) => {
-  const { showDevVaults, walletConnected, vaultItems } = props;
+  const { showDevVaults, walletConnected, vaultItems, isMigrated } = props;
   const currentEventKey = useContext(AccordionContext);
-
+  const web3 = useWeb3();
+  let banner;
+  const migratedVaultsWithBalance = [];
+  if (isMigrated) {
+    vaultItems.forEach((vault) => {
+      let decimals = 18;
+      if (vault && vault.token && vault.token.decimals > 0) {
+        decimals = setDecimals(vault.token.decimals);
+      }
+      if (
+        vault &&
+        vault.balanceOf &&
+        vault.balanceOf[0].value >= 10 ** decimals
+      ) {
+        migratedVaultsWithBalance.push(vault);
+      }
+    });
+  }
   const renderVault = (vault) => {
     let vaultKey = vault.address;
     if (vault.pureEthereum) {
@@ -384,14 +494,26 @@ const VaultsWrapper = (props) => {
         accordionKey={vaultKey}
         active={currentEventKey === vaultKey}
         showDevVaults={showDevVaults}
+        web3={web3}
       />
     );
   };
 
+  const showBanner = !!migratedVaultsWithBalance.length;
+
+  if (showBanner) {
+    banner = <MigrationBannerSvg vaults={migratedVaultsWithBalance} />;
+  }
+
   // Show Linear progress when orderedvaults is empty
   if (walletConnected && vaultItems == null) return <LinearProgress />;
   const vaultRows = _.map(vaultItems, renderVault);
-  return <React.Fragment>{vaultRows}</React.Fragment>;
+  return (
+    <React.Fragment>
+      {banner}
+      {vaultRows}
+    </React.Fragment>
+  );
 };
 
 Vaults.whyDidYouRender = true;

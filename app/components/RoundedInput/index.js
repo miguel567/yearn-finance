@@ -47,7 +47,16 @@ const escapeRegExp = (string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const inputRegex = RegExp(`^\\d*(?:\\\\[.])?\\d*$`);
 
 export const RoundedInput = React.forwardRef((props, ref) => {
-  const { className, onChange, value, disabled, right, maxValue } = props;
+  const {
+    className,
+    onChange,
+    value,
+    disabled,
+    right,
+    maxValue,
+    placeholder,
+    disabledStyle,
+  } = props;
   const invalid = !isValidValue(value, maxValue);
 
   return (
@@ -61,6 +70,8 @@ export const RoundedInput = React.forwardRef((props, ref) => {
         spellCheck="false"
         value={value}
         disabled={disabled}
+        style={disabledStyle}
+        placeholder={placeholder}
         onChange={(event) => {
           const input = event.target.value;
           if (input === '' || inputRegex.test(escapeRegExp(input))) {
