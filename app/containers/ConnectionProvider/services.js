@@ -1,6 +1,7 @@
 import Onboard from 'bnc-onboard';
 import Notify from 'bnc-notify';
 
+
 const networkId = 1;
 const rpcUrl =
   localStorage.getItem('WEB3_PROVIDER_HTTPS') ||
@@ -9,6 +10,8 @@ const dappId = process.env.BLOCKNATIVE_DAPP_ID;
 const portisKey = process.env.PORTIS_APIKEY;
 const fortmaticKey = process.env.FORTMATIC_APIKEY;
 // const apiUrl = 'wss://api.blocknative.com/v0';
+
+
 
 export function initOnboard(subscriptions, darkMode) {
   return Onboard({
@@ -19,6 +22,7 @@ export function initOnboard(subscriptions, darkMode) {
     subscriptions,
     walletSelect: {
       wallets: [
+        { walletName: 'detectedwallet' },
         { walletName: 'metamask' },
         {
           walletName: 'walletConnect',

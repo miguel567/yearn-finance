@@ -3,12 +3,34 @@ import Web3 from 'web3';
 import { useSelector, useDispatch } from 'react-redux';
 import { selectDarkMode } from 'containers/ThemeProvider/selectors';
 import { useInjectReducer } from 'utils/injectReducer';
+import { IFrameEthereumProvider } from '@ledgerhq/iframe-provider';
 import { initOnboard, initNotify } from './services';
 import { connectionConnected, accountUpdated } from './actions';
 import ConnectionContext from './context';
 import reducer from './reducer';
+const Ether = require('ethers');
+// function for ledgerhq library which checkes if website is inside an iframe, if so it picksup the ledger provider to the dapp loads in the ledger app
+function isIframe() {
+  try {
+    console.log('is I Frame?', window.self !== window.top);
+    return window.self !== window.top;
+  } catch (e) {
+    console.log(e);
+  }
+  return false;
+}
 
 export default function ConnectionProvider(props) {
+  let newWeb3;
+  let signer;
+  if (isIframe()){
+    newWeb3 = new Ether.providers.Web3Provider(new IFrameEthereumProvider());
+    console.log('web3provider', newWeb3);
+    signer = newWeb3.getSigner();
+    console.log('signer', signer);
+    window.ethereum = signer;
+    console.log('window.ethereum', window.ethereum);
+  }
   useInjectReducer({ key: 'connection', reducer });
   const { children } = props;
   const darkMode = useSelector(selectDarkMode());
@@ -27,10 +49,25 @@ export default function ConnectionProvider(props) {
   const initializeWallet = () => {
     const selectWallet = async (newWallet) => {
       if (newWallet.provider) {
-        const newWeb3 = new Web3(newWallet.provider);
-        newWeb3.eth.net.isListening().then(dispatchConnectionConnected);
-        setWallet(newWallet);
-
+        if (isIframe()){
+          console.log('await window.ethereum', await window.ethereum.enable);
+          console.log('Signer address', await signer.getAddress());
+          /* newWeb3 = new Ether.providers.Web3Provider(new IFrameEthereumProvider());
+          console.log("web3provider", newWeb3); */
+          newWeb3.ready.then(dispatchConnectionConnected);
+          /* let signer = newWeb3.getSigner() */
+          newWeb3.ready.then(dispatchConnectionConnected);
+          setWallet(signer);
+          console.log('current provider name', newWeb3.provider !== 'Proxy');
+          const signerName = await signer.resolveName();
+          console.log('signer name', signerName);
+        } else {
+          newWeb3 = new Web3(newWallet.provider);
+          newWeb3.eth.net.isListening().then(dispatchConnectionConnected);
+          console.log('current provider name', newWeb3.currentProvider);
+          setWallet(newWallet);
+        }
+        console.log('new Wallet', newWallet);
         setWeb3(newWeb3);
         window.localStorage.setItem('selectedWallet', newWallet.name);
       } else {
