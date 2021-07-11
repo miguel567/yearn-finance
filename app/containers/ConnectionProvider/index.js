@@ -8,7 +8,6 @@ import { initOnboard, initNotify } from './services';
 import { connectionConnected, accountUpdated } from './actions';
 import ConnectionContext from './context';
 import reducer from './reducer';
-const Ether = require('ethers');
 // function for ledgerhq library which checkes if website is inside an iframe, if so it picksup the ledger provider to the dapp loads in the ledger app
 function isIframe() {
   try {
@@ -24,11 +23,10 @@ export default function ConnectionProvider(props) {
   let newWeb3;
   let signer;
   if (isIframe()){
-    newWeb3 = new Ether.providers.Web3Provider(new IFrameEthereumProvider());
+    newWeb3 = Web3.(new IFrameEthereumProvider());
     console.log('web3provider', newWeb3);
-    signer = newWeb3.getSigner();
-    console.log('signer', signer);
-    window.ethereum = signer;
+    console.log('accounts', newWeb3.eth.accounts.wallet);
+    window.ethereum = newWeb3.eth.accounts.wallet;
     console.log('window.ethereum', window.ethereum);
   }
   useInjectReducer({ key: 'connection', reducer });
@@ -50,17 +48,10 @@ export default function ConnectionProvider(props) {
     const selectWallet = async (newWallet) => {
       if (newWallet.provider) {
         if (isIframe()){
-          console.log('await window.ethereum', await window.ethereum.enable);
-          console.log('Signer address', await signer.getAddress());
-          /* newWeb3 = new Ether.providers.Web3Provider(new IFrameEthereumProvider());
-          console.log("web3provider", newWeb3); */
-          newWeb3.ready.then(dispatchConnectionConnected);
-          /* let signer = newWeb3.getSigner() */
-          newWeb3.ready.then(dispatchConnectionConnected);
-          setWallet(signer);
+          await window.ethereum.enable
+          newWeb3.eth.net.isListening().then(dispatchConnectionConnected);
+          setWallet(newWeb3.eth.accounts.wallet);
           console.log('current provider name', newWeb3.provider !== 'Proxy');
-          const signerName = await signer.resolveName();
-          console.log('signer name', signerName);
         } else {
           newWeb3 = new Web3(newWallet.provider);
           newWeb3.eth.net.isListening().then(dispatchConnectionConnected);
