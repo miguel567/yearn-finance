@@ -21,13 +21,12 @@ function isIframe() {
 
 export default function ConnectionProvider(props) {
   let newWeb3;
-  let signer;
   if (isIframe()){
-    newWeb3 = Web3.(new IFrameEthereumProvider());
-    console.log('web3provider', newWeb3);
-    console.log('accounts', newWeb3.eth.accounts.wallet);
+    newWeb3 = new Web3(new IFrameEthereumProvider());
+/*     console.log('web3provider', newWeb3);
+    console.log('accounts', newWeb3.eth.accounts.wallet); */
     window.ethereum = newWeb3.eth.accounts.wallet;
-    console.log('window.ethereum', window.ethereum);
+/*     console.log('window.ethereum', window.ethereum); */
   }
   useInjectReducer({ key: 'connection', reducer });
   const { children } = props;
@@ -48,14 +47,12 @@ export default function ConnectionProvider(props) {
     const selectWallet = async (newWallet) => {
       if (newWallet.provider) {
         if (isIframe()){
-          await window.ethereum.enable
+          /* await window.ethereum.enable */
           newWeb3.eth.net.isListening().then(dispatchConnectionConnected);
           setWallet(newWeb3.eth.accounts.wallet);
-          console.log('current provider name', newWeb3.provider !== 'Proxy');
         } else {
           newWeb3 = new Web3(newWallet.provider);
           newWeb3.eth.net.isListening().then(dispatchConnectionConnected);
-          console.log('current provider name', newWeb3.currentProvider);
           setWallet(newWallet);
         }
         console.log('new Wallet', newWallet);
